@@ -1,0 +1,543 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Pillow resampling compatibility
+try:
+    Resampling = Image.Resampling.LANCZOS
+except AttributeError:
+    Resampling = Image.ANTIALIAS
+
+
+class ImageProcessingToolkit:
+    # New palettes for a slightly different look
+    PALETTES = {
+        'light': {
+            'BG': "#f6f8fa", 'PANEL': "#ffffff", 'ACCENT': "#2563eb",
+            'TEXT': "#111827", 'SUBTEXT': "#6b7280", 'BORDER': "#e6e9ef"
+        },
+        'dark': {
+            'BG': "#0b1220", 'PANEL': "#0f1724", 'ACCENT': "#60a5fa",
+            'TEXT': "#e6eef8", 'SUBTEXT': "#9aa4b2", 'BORDER': "#111827"
+        }
+    }
+    COLOR_BTN_POINT = "#00a5a5"
+    COLOR_BTN_SPATIAL = "#ff6b6b"
+    COLOR_BTN_GLOBAL = "#ffc107"
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Digital Image Processing Toolkit (Sifatul Jannat)")
+        self.root.geometry("1200x720")
+        self.is_dark_mode = False
+        self._set_theme_vars()
+
+        # Image storage
+        self.original_color_image = None
+        self.grayscale_image = None
+        self.current_display_image = None
+        self.processed_image = None
+
+        # Developer info
+        self.dev_name = "Sifatul Jannat"
+        self.dev_id = "081220105101113"
+        self.last_operation = "None"
+
+        # Tk image refs to prevent GC
+        self.orig_tk_img = None
+        self.proc_tk_img = None
+        self.dev_photo_tk = None
+
+        # Build UI
+        self._build_top_toolbar()
+        self._build_main_area()
+        self._build_statusbar()
+
+        # Initial redraw
+        self._recolor_widgets()
+        self.root.bind('<Configure>', lambda e: self._update_layout())
+
+    def _set_theme_vars(self):
+        self.C = self.PALETTES['dark'] if self.is_dark_mode else self.PALETTES['light']
+
+    def _recolor_widgets(self):
+        # set background
+        self.root.configure(bg=self.C['BG'])
+        for w in getattr(self, 'theme_widgets', []):
+            try:
+                widget, role = w
+                if role == 'panel':
+                    widget.config(bg=self.C['PANEL'], highlightbackground=self.C['BORDER'])
+                elif role == 'text':
+                    widget.config(bg=self.C['PANEL'], fg=self.C['TEXT'])
+                elif role == 'subtext':
+                    widget.config(bg=self.C['PANEL'], fg=self.C['SUBTEXT'])
+                elif role == 'toolbar':
+                    widget.config(bg=self.C['PANEL'])
+                elif role == 'status':
+                    widget.config(bg=self.C['PANEL'], fg=self.C['SUBTEXT'])
+                elif role == 'canvas':
+                    widget.config(bg=self.C['PANEL'])
+                elif role == 'dev_photo':
+                    widget.config(bg=self.C['PANEL'])
+                elif role == 'button_primary':
+                    widget.config(bg=self.C['ACCENT'], fg="white", activebackground=self.C['ACCENT'])
+                elif role == 'button_neutral':
+                    widget.config(bg=self.C['PANEL'], fg=self.C['TEXT'], activebackground=self.C['BORDER'])
+            except tk.TclError:
+                pass
+
+        # update toggle text
+        if hasattr(self, 'theme_btn'):
+            self.theme_btn.config(text="LIGHT MODE" if self.is_dark_mode else "DARK MODE")
+        if hasattr(self, 'toggle_button'):
+            # show appropriate text
+            if self.current_display_image and self.current_display_image.mode == 'L':
+                self.toggle_button.config(text="TOGGLE TO RGB")
+            else:
+                self.toggle_button.config(text="TOGGLE TO GRAYSCALE")
+
+    def _track(self, widget, role):
+        if not hasattr(self, 'theme_widgets'):
+            self.theme_widgets = []
+        self.theme_widgets.append((widget, role))
+        return widget
+
+    # ----------------- UI Building -----------------
+    def _build_top_toolbar(self):
+        toolbar = tk.Frame(self.root, height=52, bd=0, relief=tk.FLAT)
+        toolbar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(8, 4))
+        self._track(toolbar, 'toolbar')
+
+        # Left group (file)
+        left_group = tk.Frame(toolbar)
+        left_group.pack(side=tk.LEFT, padx=6)
+        self._track(left_group, 'toolbar')
+
+        btn_style = {"bd": 0, "relief": tk.FLAT, "padx": 10, "pady": 8, "cursor": "hand2", "font": ("Segoe UI", 10, "bold")}
+
+        load_btn = tk.Button(left_group, text="Load Image", command=self.load_image, **btn_style)
+        self._track(load_btn, 'button_primary').pack(side=tk.LEFT, padx=4)
+        save_btn = tk.Button(left_group, text="Save Processed", command=self.save_image, **btn_style)
+        self._track(save_btn, 'button_primary').pack(side=tk.LEFT, padx=4)
+
+        # Center title
+        title = tk.Label(toolbar, text="Digital Image Processing Toolkit — Mid-Term Assessment", font=("Segoe UI", 12, "bold"))
+        title.pack(side=tk.LEFT, padx=12)
+        self._track(title, 'text')
+
+        # Right group (toggles)
+        right_group = tk.Frame(toolbar)
+        right_group.pack(side=tk.RIGHT, padx=6)
+        self._track(right_group, 'toolbar')
+
+        self.toggle_button = tk.Button(right_group, text="TOGGLE TO GRAYSCALE", command=self.set_to_grayscale, **btn_style)
+        self._track(self.toggle_button, 'button_neutral').pack(side=tk.LEFT, padx=4)
+
+        self.theme_btn = tk.Button(right_group, text="DARK MODE", command=self.toggle_dark_mode, **btn_style)
+        self._track(self.theme_btn, 'button_neutral').pack(side=tk.LEFT, padx=4)
+
+    def _build_main_area(self):
+        # Main container
+        main = tk.Frame(self.root)
+        main.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        self._track(main, 'toolbar')
+        main.columnconfigure(0, weight=3)
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(0, weight=1)
+
+        # Left column (previews stacked)
+        left_col = tk.Frame(main)
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        left_col.rowconfigure(0, weight=1)
+        left_col.rowconfigure(1, weight=1)
+        self._track(left_col, 'panel')
+
+        # Source panel
+        src_panel = tk.Frame(left_col, padx=8, pady=8, highlightthickness=1, bd=0, relief=tk.FLAT)
+        src_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+        self._track(src_panel, 'panel')
+        tk.Label(src_panel, text="SOURCE IMAGE", font=("Segoe UI", 10, "bold")).pack(anchor="nw")
+        self._track(tk.Label(src_panel, text="Mode: N/A", font=("Segoe UI", 9)), 'subtext')
+        self.mode_label = tk.Label(src_panel, text="", font=("Segoe UI", 9))
+        self._track(self.mode_label, 'subtext')
+        self.mode_label.pack(anchor="ne")
+        self.canvas_orig = tk.Canvas(src_panel, highlightthickness=0)
+        self._track(self.canvas_orig, 'canvas')
+        self.canvas_orig.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        # Processed panel
+        proc_panel = tk.Frame(left_col, padx=8, pady=8, highlightthickness=1, bd=0, relief=tk.FLAT)
+        proc_panel.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        self._track(proc_panel, 'panel')
+        tk.Label(proc_panel, text="PROCESSED OUTPUT", font=("Segoe UI", 10, "bold")).pack(anchor="nw")
+        self.canvas_proc = tk.Canvas(proc_panel, highlightthickness=0)
+        self._track(self.canvas_proc, 'canvas')
+        self.canvas_proc.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        # Right column (operations)
+        right_col = tk.Frame(main, width=320)
+        right_col.grid(row=0, column=1, sticky="nsew")
+        right_col.columnconfigure(0, weight=1)
+        self._track(right_col, 'panel')
+
+        # Group: Point operations
+        point_frame = tk.LabelFrame(right_col, text="Point Operations", padx=6, pady=6)
+        point_frame.pack(fill=tk.X, pady=(0, 8), padx=4)
+        self._track(point_frame, 'panel')
+        self._add_op_button(point_frame, "Image Negative", self.image_negative, bg="#059669")
+        self._add_op_button(point_frame, "Log Transform", self.log_transform, bg="#059669")
+        self._add_op_button(point_frame, "Gamma Transform (Custom)", self.open_gamma_dialog, bg="#059669")
+        self._add_op_button(point_frame, "Threshold (T=128)", self.thresholding, bg="#059669")
+
+        # Group: Spatial Filters
+        spat_frame = tk.LabelFrame(right_col, text="Spatial Filters (Grayscale)", padx=6, pady=6)
+        spat_frame.pack(fill=tk.X, pady=(0, 8), padx=4)
+        self._track(spat_frame, 'panel')
+        self._add_op_button(spat_frame, "Smoothing (Avg 3x3)", self.smoothing, bg="#b91c1c")
+        self._add_op_button(spat_frame, "Sharpening (Laplacian)", self.sharpening, bg="#b91c1c")
+        self._add_op_button(spat_frame, "Edge Detection (Sobel)", self.edge_detection, bg="#b91c1c")
+
+        # Group: Global / Utilities
+        util_frame = tk.LabelFrame(right_col, text="Global / Utility", padx=6, pady=6)
+        util_frame.pack(fill=tk.X, pady=(0, 8), padx=4)
+        self._track(util_frame, 'panel')
+        self._add_op_button(util_frame, "Show Histogram", self.show_histogram, bg="#f59e0b")
+        self._add_op_button(util_frame, "Resize (0.5x)", self.resize_half, bg="#f59e0b")
+
+        # Developer Info card at bottom
+        dev_card = tk.Frame(right_col, padx=8, pady=8, bd=0, relief=tk.FLAT)
+        dev_card.pack(side=tk.BOTTOM, fill=tk.X, padx=4, pady=(8, 0))
+        self._track(dev_card, 'panel')
+
+        # small dev photo
+        dev_photo = Image.new("RGB", (64, 64), color=self.C['BORDER'])
+        self.dev_photo_tk = ImageTk.PhotoImage(dev_photo)
+        
+        
+        self.dev_label = tk.Label(dev_card, image=self.dev_photo_tk, cursor="hand2")
+        self.dev_label.pack(side=tk.LEFT, padx=(0, 8))
+        self._track(self.dev_label, 'dev_photo')
+        self.dev_label.bind("<Button-1>", self.change_developer_photo_by_click)
+
+        tk.Label(dev_card, text=self.dev_name, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        tk.Label(dev_card, text=f"ID: {self.dev_id}", font=("Segoe UI", 9)).pack(anchor="w")
+
+    def _add_op_button(self, parent, text, cmd, bg=None):
+        b = tk.Button(parent, text=text, command=lambda c=cmd: self._apply_operation_with_feedback(c, op_name=text),
+                      wraplength=260, justify=tk.LEFT, anchor="w", padx=6, pady=6, cursor="hand2")
+        if bg:
+            b.config(bg=bg, fg="white", bd=0)
+            self._track(b, 'button_primary')
+        else:
+            self._track(b, 'button_neutral')
+        b.pack(fill=tk.X, pady=4)
+
+    def _build_statusbar(self):
+        self.status_bar = tk.Label(self.root, text="Ready | No image loaded.", bd=1, relief=tk.FLAT, anchor=tk.W, padx=8)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
+        self._track(self.status_bar, 'status')
+
+    # ----------------- I/O and Display -----------------
+    def load_image(self):
+        file_path = filedialog.askopenfilename(title="Select an image", filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff")])
+        if not file_path:
+            return
+        try:
+            self.original_color_image = Image.open(file_path).convert("RGB")
+            self.grayscale_image = self.original_color_image.convert("L")
+            self.current_display_image = self.original_color_image
+            self.processed_image = None
+            self._update_layout()
+            self._update_toggle_button("Grayscale")
+            self._update_status("Image Loaded")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load image:\n{e}")
+
+    def save_image(self):
+        if not self.processed_image:
+            messagebox.showwarning("Warning", "No processed image to save.")
+            return
+        file_path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG files", ".png"), ("JPEG files", ".jpg"), ("BMP files", "*.bmp")])
+        if not file_path:
+            return
+        try:
+            self.processed_image.save(file_path)
+            messagebox.showinfo("Saved", f"Image saved successfully at:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save image:\n{e}")
+
+    def _update_toggle_button(self, mode):
+        if mode == "Grayscale":
+            self.toggle_button.config(text="TOGGLE TO GRAYSCALE", command=self.set_to_grayscale)
+        else:
+            self.toggle_button.config(text="TOGGLE TO RGB", command=self.set_to_rgb)
+
+    def set_to_grayscale(self):
+        if not self.grayscale_image:
+            messagebox.showwarning("Warning", "Load an image first.")
+            return
+        if self.current_display_image is None or self.current_display_image.mode != 'L':
+            self.current_display_image = self.grayscale_image
+            self._update_layout()
+            self._update_toggle_button("RGB")
+            self._update_status("Toggled to Grayscale")
+
+    def set_to_rgb(self):
+        if not self.original_color_image:
+            messagebox.showwarning("Warning", "Load an image first.")
+            return
+        if self.current_display_image is None or self.current_display_image.mode != 'RGB':
+            self.current_display_image = self.original_color_image
+            self._update_layout()
+            self._update_toggle_button("Grayscale")
+            self._update_status("Toggled to RGB")
+
+    def change_developer_photo_by_click(self, event=None):
+        file_path = filedialog.askopenfilename(title="Select Developer Photo", filetypes=[("Image files", "*.jpg *.jpeg *.png")])
+        if file_path:
+            try:
+                img = Image.open(file_path).convert("RGB").resize((64, 64), Resampling)
+                self.dev_photo_tk = ImageTk.PhotoImage(img)
+                self.dev_label.config(image=self.dev_photo_tk)
+                self.dev_label.image = self.dev_photo_tk
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load photo: {e}")
+
+    def _update_layout(self):
+        # redraw images to available canvas sizes
+        if self.current_display_image:
+            w = max(1, self.canvas_orig.winfo_width())
+            h = max(1, self.canvas_orig.winfo_height())
+            self._display_image(self.current_display_image, self.canvas_orig, w, h, 'orig')
+
+        if self.processed_image:
+            w = max(1, self.canvas_proc.winfo_width())
+            h = max(1, self.canvas_proc.winfo_height())
+            self._display_image(self.processed_image, self.canvas_proc, w, h, 'proc')
+
+        self._update_status(self.last_operation)
+
+    def _display_image(self, img, canvas, max_w, max_h, ref_key):
+        try:
+            w, h = img.size
+            scale = min((max_w - 10) / w if w else 1, (max_h - 10) / h if h else 1)
+            if scale <= 0:
+                scale = 1
+            if scale < 1:
+                img_resized = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Resampling)
+            else:
+                img_resized = img.copy()
+            tk_img = ImageTk.PhotoImage(img_resized)
+            if ref_key == 'orig':
+                self.orig_tk_img = tk_img
+            else:
+                self.proc_tk_img = tk_img
+            canvas.delete("all")
+            canvas.create_image(max_w // 2, max_h // 2, image=tk_img, anchor=tk.CENTER)
+            canvas.image = tk_img
+        except Exception:
+            pass
+
+    def _update_status(self, op_name="None"):
+        self.last_operation = op_name
+        mode = "N/A"
+        w_orig = h_orig = 0
+        if self.current_display_image:
+            w_orig, h_orig = self.current_display_image.size
+            mode = self.current_display_image.mode
+        self.mode_label.config(text=f"Mode: {mode}")
+        self.status_bar.config(text=f"Mode: {mode} | Dimensions: {w_orig}x{h_orig} | Last Operation: {self.last_operation}")
+
+    # ----------------- Operation Helpers -----------------
+    def _apply_operation_with_feedback(self, func, *args, op_name="Operation"):
+        if self.current_display_image is None:
+            messagebox.showerror("Error", "Load an image first.")
+            return
+        self.root.config(cursor="watch")
+        self.root.update()
+        try:
+            func(*args)
+            self._update_status(op_name)
+        except Exception as e:
+            messagebox.showerror("Processing Error", f"Operation failed: {e}")
+        finally:
+            self.root.config(cursor="")
+            self.root.update()
+
+    def _get_image_array(self, force_grayscale=False):
+        if self.current_display_image is None:
+            return None, None
+        img = self.current_display_image
+        if force_grayscale and img.mode != 'L':
+            img = self.grayscale_image
+        arr = np.array(img, dtype=np.float32)
+        return arr, img.mode
+
+    # ----------------- Operations -----------------
+    def image_negative(self):
+        arr, mode = self._get_image_array(False)
+        if arr is None:
+            return
+        neg = np.clip(255.0 - arr, 0, 255).astype(np.uint8)
+        self.processed_image = Image.fromarray(neg, mode=mode)
+        self._update_layout()
+
+    def log_transform(self):
+        arr, mode = self._get_image_array(False)
+        if arr is None:
+            return
+        c = 255.0 / np.log(1.0 + np.max(arr))
+        log_img = c * np.log(1.0 + arr)
+        out = np.clip(log_img, 0, 255).astype(np.uint8)
+        self.processed_image = Image.fromarray(out, mode=mode)
+        self._update_layout()
+
+    def open_gamma_dialog(self):
+        if self.current_display_image is None:
+            messagebox.showerror("Error", "Load an image first.")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Set Gamma Value")
+        dialog.geometry("320x150")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.focus_force()
+        tk.Label(dialog, text="Enter Gamma (γ) Value:", font=("Segoe UI", 10, "bold")).pack(pady=(12, 6))
+        gamma_entry = tk.Entry(dialog, width=12, justify=tk.CENTER)
+        gamma_entry.insert(0, "0.5")
+        gamma_entry.pack()
+        tk.Label(dialog, text="Typical Range: 0.1 to 5.0").pack(pady=(6, 8))
+
+        def apply_gamma_action():
+            try:
+                gamma = float(gamma_entry.get())
+                if gamma <= 0:
+                    raise ValueError("Gamma must be positive.")
+                dialog.destroy()
+                self._apply_operation_with_feedback(self._apply_gamma_core, gamma, op_name=f"Gamma Transform (γ={gamma:.2f})")
+            except Exception as e:
+                messagebox.showerror("Invalid Input", f"Please enter a valid positive number for Gamma.\nError: {e}", parent=dialog)
+
+        tk.Button(dialog, text="Apply", command=apply_gamma_action, padx=8, pady=6).pack()
+        self.root.wait_window(dialog)
+
+    def _apply_gamma_core(self, gamma):
+        arr, mode = self._get_image_array(False)
+        if arr is None:
+            return
+        gamma_img = 255.0 * ((arr.astype(np.float32) / 255.0) ** gamma)
+        out = np.clip(gamma_img, 0, 255).astype(np.uint8)
+        self.processed_image = Image.fromarray(out, mode=mode)
+        self._update_layout()
+
+    def resize_half(self):
+        img = self.current_display_image
+        if img is None:
+            return
+        w, h = img.size
+        self.processed_image = img.resize((max(1, w // 2), max(1, h // 2)), Resampling)
+        self._update_layout()
+
+    def smoothing(self):
+        kernel = np.ones((3, 3), dtype=np.float32) / 9.0
+        self._apply_convolution_core(kernel, "Smoothing (Average Filter)")
+
+    def sharpening(self):
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+        self._apply_convolution_core(kernel, "Sharpening (Laplacian)")
+
+    def edge_detection(self):
+        arr, mode = self._get_image_array(True)
+        if arr is None:
+            return
+        # arr should be 2D (grayscale)
+        Gx = self.convolve2d(arr, np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32))
+        Gy = self.convolve2d(arr, np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=np.float32))
+        G = np.sqrt(Gx ** 2 + Gy ** 2)
+        out = np.clip(G, 0, 255).astype(np.uint8)
+        self.processed_image = Image.fromarray(out, mode='L')
+        self._update_layout()
+
+    def _apply_convolution_core(self, kernel, operation_name):
+        arr, mode = self._get_image_array(True)
+        if arr is None:
+            return
+        if self.current_display_image.mode != 'L' and mode == 'L':
+            messagebox.showinfo("Info", f"{operation_name} will use the grayscale version.", parent=self.root)
+        processed = self.convolve2d(arr, kernel)
+        out = np.clip(processed, 0, 255).astype(np.uint8)
+        self.processed_image = Image.fromarray(out, mode='L')
+        self._update_layout()
+
+    def show_histogram(self):
+        arr, mode = self._get_image_array(True)
+        if arr is None:
+            return
+
+        if self.is_dark_mode:
+            plt.style.use('dark_background')
+        else:
+            plt.style.use('default')
+
+        plt.figure("Histogram")
+        plt.clf()
+        plt.title("Image Histogram (Grayscale)")
+        plt.xlabel("Pixel Intensity")
+        plt.ylabel("Frequency")
+        plt.hist(arr.flatten(), bins=256, range=(0, 255))
+        plt.grid(axis='y', alpha=0.6)
+        plt.show()
+        plt.style.use('default')
+
+    def thresholding(self):
+        arr, mode = self._get_image_array(True)
+        if arr is None:
+            return
+        out = np.where(arr > 128, 255, 0).astype(np.uint8)
+        self.processed_image = Image.fromarray(out, mode='L')
+        self._update_layout()
+
+    # ----------------- Convolution core -----------------
+    def convolve2d(self, image, kernel):
+        kernel = np.flipud(np.fliplr(kernel)).astype(np.float32)
+        kh, kw = kernel.shape
+        pad_h, pad_w = kh // 2, kw // 2
+
+        if image.ndim == 2:
+            h, w = image.shape
+            out = np.zeros((h, w), dtype=np.float32)
+            padded = np.pad(image, ((pad_h, pad_h), (pad_w, pad_w)), mode='edge')
+            for y in range(h):
+                for x in range(w):
+                    out[y, x] = (kernel * padded[y:y + kh, x:x + kw]).sum()
+            return out
+        elif image.ndim == 3:
+            h, w, ch = image.shape
+            channels = []
+            for c in range(ch):
+                chan = image[:, :, c]
+                outc = np.zeros_like(chan, dtype=np.float32)
+                padded = np.pad(chan, ((pad_h, pad_h), (pad_w, pad_w)), mode='edge')
+                for y in range(chan.shape[0]):
+                    for x in range(chan.shape[1]):
+                        outc[y, x] = (kernel * padded[y:y + kh, x:x + kw]).sum()
+                channels.append(outc)
+            return np.stack(channels, axis=2)
+        else:
+            raise ValueError("Unsupported image array shape for convolution")
+
+    # ----------------- Theme -----------------
+    def toggle_dark_mode(self):
+        self.is_dark_mode = not self.is_dark_mode
+        self._set_theme_vars()
+        self._recolor_widgets()
+        self._update_status(f"Theme Toggled to {'Dark' if self.is_dark_mode else 'Light'}")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ImageProcessingToolkit(root)
+    root.mainloop()
